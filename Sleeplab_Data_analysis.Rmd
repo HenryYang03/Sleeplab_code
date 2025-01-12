@@ -1,0 +1,148 @@
+---
+title: "Sleep Lab Data Analysis"
+author: "Mohan Yang"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lme4)
+library(glmmLasso)
+library(ggplot2)
+library(qqplotr)
+library(dplyr)
+library(readxl)
+library(cAIC4)
+```
+
+```{r}
+# Load data
+file_path <- "/Users/mohanyang/Desktop/Shen Research/data/sleep_diary_all_updated.xlsx"
+df <- read_excel(file_path, sheet = "combined_psg_mood_all")
+
+# Convert columns to appropriate types
+df$SID <- as.factor(df$SID)
+df$Phase <- as.factor(df$Phase)
+
+# Define variable groups
+mood_columns <- grep("Index$", colnames(df), value = TRUE)
+pms_columns <- grep("PMS$", colnames(df), value = TRUE)
+intake_columns <- grep("Intake$", colnames(df), value = TRUE)
+hormone_columns <- c("Mean_Est", "Mean_Prog", "Mean_Testost")
+additional_columns <- c(
+  "Overall_Alertness", "Mental_Stamina", "Physical_Endurance",
+  "Physical_Strength", "Thinking", "Overall_Coordination",
+  "Mood_Stability", "Social_Interactions"
+)
+
+# Combine independent variables
+candidate_terms <- c(mood_columns, pms_columns, intake_columns, hormone_columns, additional_columns, "Phase")
+interaction_terms_with_phases <- sapply(candidate_terms, function(var) paste0("Phase:", var))
+interaction_terms_with_all_combo <- combn(candidate_terms, 2, function(x) paste(x[1], ":", x[2], sep = ""))
+all_terms <- c(candidate_terms, interaction_terms_with_phases)
+
+# dependent variables
+dependent_vars <- c("REM", "TST", "WASO", "N1", "N2", "SWS", "NREM")
+
+# Print candidate terms and interaction terms
+print("Candidate Terms: ")
+print(candidate_terms)
+
+print("Interaction Terms with Phase: ")
+print(interaction_terms_with_phases)
+```
+
+```{r}
+# Combined loop for cleaning and converting datasets
+cleaned_data_list <- list()
+
+for (outcome in dependent_vars) {
+  cat("Processing data for outcome:", outcome, "\n")
+  
+  # Define columns to keep (dependent variable + candidate terms + group variable)
+  columns_to_keep <- c(candidate_terms, outcome, "SID")
+  
+  # Subset the data to include only the relevant columns
+  cleaned_data <- df[, columns_to_keep, drop = FALSE]
+  
+  # Convert applicable columns to numeric first
+  cleaned_data[] <- lapply(names(cleaned_data), function(column) {
+    if (!column %in% c("Phase", "SID") && is.character(cleaned_data[[column]])) {
+      suppressWarnings(as.numeric(cleaned_data[[column]])) # Suppress warnings for coercion
+    } else {
+      cleaned_data[[column]]
+    }
+  })
+  
+  # Drop rows with NA in the specified columns
+  cleaned_data <- cleaned_data[complete.cases(cleaned_data), ]
+  
+  # Store the cleaned and processed dataset in the list
+  cleaned_data_list[[outcome]] <- as.data.frame(cleaned_data)
+  
+  # Print a summary message
+  cat("Cleaned and processed data for", outcome, "has", 
+      nrow(cleaned_data), "rows and", ncol(cleaned_data), "columns.\n")
+}
+
+
+df_cleaned_for_REM <- cleaned_data_list[["REM"]]
+df_cleaned_for_TST <- cleaned_data_list[["TST"]]
+df_cleaned_for_WASO <- cleaned_data_list[["WASO"]]
+df_cleaned_for_N1 <- cleaned_data_list[["N1"]]
+df_cleaned_for_N2 <- cleaned_data_list[["N2"]]
+df_cleaned_for_SWS <- cleaned_data_list[["SWS"]]
+df_cleaned_for_NREM <- cleaned_data_list[["NREM"]]
+```
+
+
+```{r}
+# Initialize a list to store results
+results <- list()
+
+# Loop through each dependent variable
+for (outcome in dependent_vars) {
+  cat("Fitting GLMMLasso for", outcome, "\n")
+  
+  # Prepare the formula for fixed effects
+  formula <- as.formula(
+    paste(
+      outcome, "~",
+      paste(c("as.factor(Phase)", setdiff(candidate_terms, "Phase")), collapse = " + ")
+    )
+  )
+  
+  # Extract the current dataset
+  current_data <- cleaned_data_list[[outcome]]
+  
+  # Fit the GLMMLasso model
+  glmmLasso_fit <- glmmLasso(
+    fix = formula,
+    rnd = list(SID = ~1),
+    data = current_data,
+    lambda = 100,  # Regularization parameter (adjust based on needs)
+    family = gaussian()
+  )
+  
+  # Extract coefficients
+  coefficients <- glmmLasso_fit$coefficients
+  
+  # Define threshold for filtering (e.g., close to 0)
+  threshold <- 0.01
+  
+  # Select variables with coefficients smaller than the threshold
+  ditched_vars <- names(coefficients)[abs(coefficients) < threshold]
+  
+  # Store results for this outcome
+  results[[outcome]] <- list(
+    "Coefficients" = coefficients,
+    "Ditched Variables" = ditched_vars
+  )
+  
+  # Print the ditched variables
+  cat("Ditched Variables for", outcome, ":\n")
+  cat(ditched_vars, "\n\n")
+}
+```
+
+
